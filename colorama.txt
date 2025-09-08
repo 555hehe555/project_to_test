@@ -1,0 +1,8 @@
+from colorama import *
+
+"""
+[Fore.RED, Fore.GREEN, Fore.BLUE, Fore.YELLOW, Fore.CYAN, Fore.MAGENTA, Fore.WHITE, Fore.BLACK]
+[Back.RED, Back.GREEN, Back.BLUE, Back.YELLOW, Back.CYAN, Back.MAGENTA, Back.WHITE, Back.BLACK]
+[Style.BRIGHT, Style.DIM, Style.NORMAL, Style.RESET_ALL]
+"""
+
