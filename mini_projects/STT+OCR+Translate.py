@@ -692,16 +692,19 @@ class EnhancedApp:
         self.root.geometry("400x550")
         self.root.minsize(500, 400)
 
-        # Додані атрибути для нової системи запису
+        # Додаткові атрибути для нової системи запису
         self.whisper_model = None
-        self.whisper_model_size = "medium"  # або tiny/base/small/medium/large
+        self.whisper_model_size = "medium"
         self.recorder = None
         self.transcribe_thread = None
         self.is_recording = False
 
+        # Прапорці стану
         self.speech_active = False
         self.auto_translate = tk.BooleanVar()
         self.save_history = tk.BooleanVar()
+        self.is_closing = False
+        self.hotkey_listener = None
 
         self.build_enhanced_ui()
         self.setup_hotkey()
@@ -709,23 +712,6 @@ class EnhancedApp:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.after(100, self.initial_show_hide)
-
-    def load_whisper_model(self):
-        if self.whisper_model is None:
-            self.update_status("⏳ Завантаження Whisper моделі...")
-            device = "cuda" if CUDA_AVAILABLE else "cpu"
-            compute_type = "float16" if device == "cuda" else "int8"
-            try:
-                self.whisper_model = WhisperModel(
-                    self.whisper_model_size,
-                    device=device,
-                    compute_type=compute_type
-                )
-                dev_info = f"GPU ({torch.cuda.get_device_name(0)})" if device == "cuda" else "CPU"
-                self.update_status(f"✅ Whisper готовий ({dev_info})")
-            except Exception as e:
-                self.update_status(f"❌ Помилка завантаження Whisper: {e}")
-                raise
 
     def build_enhanced_ui(self):
         menubar = tk.Menu(self.root)
@@ -835,6 +821,139 @@ class EnhancedApp:
             widget.bind("<Control-v>", self.paste_event)
             widget.bind("<Control-a>", self.select_all_event)
 
+    def initial_show_hide(self):
+        """Правильна ініціалізація стану вікна"""
+
+        def do_hide():
+            # Спочатку показуємо вікно, щоб воно було доступне
+            self.root.deiconify()
+            self.root.update_idletasks()
+
+            # Потім приховуємо його для фонового режиму
+            self.root.withdraw()
+            print("[Init] Програма запущена в фоновому режимі. Натисніть Ctrl+Shift+Q для показу.")
+
+        # Викликаємо з невеликою затримкою, щоб усе ініціалізувалося
+        self.root.after(500, do_hide)
+
+    def auto_close(self, delay_seconds=0):
+        """Автоматичне закриття програми через вказаний час"""
+
+        def close_sequence():
+            if delay_seconds > 0:
+                print(f"🔄 Автоматичне закриття через {delay_seconds} секунд...")
+                # Оновлюємо статус у GUI
+                self.root.after(0, lambda: self.update_status(f"🔒 Автозакриття через {delay_seconds}с..."))
+                time.sleep(delay_seconds)
+
+            print("🔒 Виконуємо автоматичне закриття...")
+            self.root.after(0, self.safe_close)
+
+        # Запускаємо в окремому потоці
+        close_thread = threading.Thread(target=close_sequence, daemon=True)
+        close_thread.start()
+
+    def safe_close(self):
+        """Безпечне закриття програми"""
+        if self.is_closing:
+            return
+
+        self.is_closing = True
+        print("🔒 Запущено процедуру закриття...")
+
+        try:
+            self.update_status("🔒 Приховуємо вікно (фоновий режим)...")
+
+            if self.is_recording and self.recorder:
+                self.recorder.stop()
+
+            if self.speech_active and hasattr(self, 'speech_thread'):
+                self.speech_thread.stop()
+
+            if self.hotkey_listener:
+                # не зупиняємо, щоб гаряча клавіша залишалась активною
+                pass
+
+            self.save_settings()
+            self.root.withdraw()
+            print("✅ Вікно приховано, процес активний у фоні.")
+
+        except Exception as e:
+            print(f"⚠️ Помилка при закритті: {e}")
+            import os
+            os._exit(0)
+
+    def toggle_visibility(self):
+        """Перемикач видимості вікна"""
+        try:
+            if not self.root.winfo_exists():
+                print("⚠️ Вікно знищено, неможливо показати повторно.")
+                return
+
+            if self.root.state() == 'withdrawn' or not self.root.winfo_viewable():
+                self.root.deiconify()
+                self.root.lift()
+                self.root.focus_force()
+                self.root.attributes('-topmost', True)
+                self.update_status("Вікно активовано")
+                self.root.after(1000, lambda: self.root.attributes('-topmost', False))
+            else:
+                self.root.withdraw()
+                self.update_status("Вікно приховано (Ctrl+Shift+Q для показу)")
+        except Exception as e:
+            print(f"Помилка перемикання видимості: {e}")
+
+    def hide_window(self):
+        """Надійне приховування вікна"""
+        try:
+            self.root.withdraw()
+            self.update_status("Вікно приховано (Ctrl+Shift+Q для показу)")
+        except Exception as e:
+            print(f"Помилка приховування вікна: {e}")
+
+    def setup_hotkey(self):
+        """Налаштування гарячих клавіш (без виклику GUI з чужого потоку)"""
+        import queue
+        self.hotkey_queue = queue.Queue()
+
+        def on_activate():
+            # кладемо подію в чергу, а не викликаємо GUI прямо
+            self.hotkey_queue.put("toggle")
+
+        def listen():
+            try:
+                hotkey = keyboard.HotKey(
+                    keyboard.HotKey.parse('<ctrl>+<shift>+q'),
+                    on_activate
+                )
+
+                self.hotkey_listener = keyboard.Listener(
+                    on_press=lambda k: hotkey.press(self.hotkey_listener.canonical(k)),
+                    on_release=lambda k: hotkey.release(self.hotkey_listener.canonical(k))
+                )
+                self.hotkey_listener.start()
+                print("Гарячі клавіши активовані: Ctrl+Shift+Q")
+            except Exception as e:
+                print(f"Помилка гарячих клавіш: {e}")
+                time.sleep(5)
+                listen()
+
+        # Фоновий потік для pynput
+        threading.Thread(target=listen, daemon=True).start()
+
+        # Перевіряємо чергу з головного потоку кожні 200 мс
+        def check_queue():
+            try:
+                while True:
+                    action = self.hotkey_queue.get_nowait()
+                    if action == "toggle":
+                        self.toggle_visibility()
+            except queue.Empty:
+                pass
+            self.root.after(200, check_queue)
+
+        self.root.after(200, check_queue)
+
     def update_status(self, message):
         self.status_var.set(message)
         self.root.update_idletasks()
@@ -938,10 +1057,9 @@ class EnhancedApp:
                         beam_size=5,
                         language=None,  # авто
                         task="transcribe",
-                        # можна налаштувати decode_options якщо потрібно
                     )
 
-                    # збираємо текст. Whisper зазвичай повертає пунктуацію.
+                    # збираємо текст
                     parts = []
                     for seg in segments:
                         txt = seg.text.strip()
@@ -951,7 +1069,6 @@ class EnhancedApp:
                     full_text = " ".join(parts).strip()
 
                     # Вставка в текстове поле разом з розміткою часу/мова
-                    detected_lang = info.language if hasattr(info, 'language') else 'unknown'
                     final = full_text
 
                     # оновлюємо GUI в головному потоці
@@ -970,7 +1087,6 @@ class EnhancedApp:
             return
 
         # якщо не записуємо — старт запису
-        # створюємо рекордер і починаємо збирати весь аудіо до стопу
         try:
             self.recorder = FullRecorder(samplerate=16000, channels=1)
             self.recorder.start()
@@ -980,6 +1096,23 @@ class EnhancedApp:
         except Exception as e:
             self.update_mic_status(f"❌ Помилка старту запису: {e}")
             self.is_recording = False
+
+    def load_whisper_model(self):
+        if self.whisper_model is None:
+            self.update_status("⏳ Завантаження Whisper моделі...")
+            device = "cuda" if CUDA_AVAILABLE else "cpu"
+            compute_type = "float16" if device == "cuda" else "int8"
+            try:
+                self.whisper_model = WhisperModel(
+                    self.whisper_model_size,
+                    device=device,
+                    compute_type=compute_type
+                )
+                dev_info = f"GPU ({torch.cuda.get_device_name(0)})" if device == "cuda" else "CPU"
+                self.update_status(f"✅ Whisper готовий ({dev_info})")
+            except Exception as e:
+                self.update_status(f"❌ Помилка завантаження Whisper: {e}")
+                raise
 
     def get_translation_languages(self, selection):
         lang_map = {
@@ -1039,52 +1172,6 @@ class EnhancedApp:
         event.widget.tag_add(tk.SEL, "1.0", tk.END)
         return "break"
 
-    def hide_window(self):
-        self.root.withdraw()
-        self.update_status("Вікно приховано (Ctrl+Shift+Q для показу)")
-
-    def initial_show_hide(self):
-        def do_hide():
-            self.root.deiconify()
-            self.root.update_idletasks()
-            self.root.withdraw()
-            print("[Init] Програма запущена в фоновому режимі")
-
-        # self.root.after(100, do_hide)
-
-    def toggle_visibility(self):
-        if self.root.state() == 'withdrawn':
-            self.root.deiconify()
-            self.root.lift()
-            self.root.focus_force()
-            self.update_status("Вікно відновлено")
-        else:
-            self.hide_window()
-
-    def setup_hotkey(self):
-        def on_activate():
-            self.root.after(0, self.toggle_visibility)
-
-        def listen():
-            try:
-                hotkey = keyboard.HotKey(
-                    keyboard.HotKey.parse('<ctrl>+<shift>+q'),
-                    on_activate
-                )
-
-                def for_canonical(f):
-                    return lambda k: f(listener.canonical(k))
-
-                with keyboard.Listener(
-                        on_press=for_canonical(hotkey.press),
-                        on_release=for_canonical(hotkey.release)
-                ) as listener:
-                    listener.join()
-            except Exception as e:
-                print(f"Помилка hotkey: {e}")
-
-        threading.Thread(target=listen, daemon=True).start()
-
     def load_settings(self):
         """Завантаження налаштувань"""
         pass
@@ -1094,23 +1181,20 @@ class EnhancedApp:
         pass
 
     def on_close(self):
-        """Закриття програми"""
-        if self.is_recording and self.recorder:
-            self.recorder.stop()
-        self.save_settings()
-        self.root.withdraw()
+        """Обробник закриття вікна"""
+        print("🔒 Закриття програми...")
+        self.safe_close()
 
 
 if __name__ == "__main__":
     print("[Запуск] Запускаємо покращену версію з Whisper CUDA...")
     root = tk.Tk()
-
     style = ttk.Style()
     style.theme_use('clam')
-
     app = EnhancedApp(root)
+    root.after(100, app.initial_show_hide)
     root.mainloop()
 
-    app.initial_show_hide()
-    app.initial_show_hide()
-    app.initial_show_hide()
+
+
+
