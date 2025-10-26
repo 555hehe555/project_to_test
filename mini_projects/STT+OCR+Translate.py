@@ -3,120 +3,274 @@ import subprocess
 import importlib
 import platform
 import os
+import urllib.request
+import zipfile
+import shutil
+from pathlib import Path
 
 
-def check_and_install_libraries():
-    """Перевіряє та автоматично встановлює необхідні бібліотеки"""
+class AutoInstaller:
+    """Автоматичний інсталятор всіх необхідних компонентів"""
 
-    required_libraries = {
-        'PIL': 'Pillow',
-        'pytesseract': 'pytesseract',
-        'pynput': 'pynput',
-        'deep_translator': 'deep_translator',
-        'sounddevice': 'sounddevice',
-        'scipy': 'scipy',
-        'numpy': 'numpy',
-        'torch': 'torch',
-    }
+    def __init__(self):
+        self.system = platform.system()
+        self.app_dir = Path(__file__).parent if hasattr(Path(__file__), 'parent') else Path.cwd()
+        self.tesseract_dir = self.app_dir / "tesseract"
+        self.tesseract_exe = self.tesseract_dir / "tesseract.exe"
 
-    # Спеціальні бібліотеки для Whisper
-    whisper_libraries = {
-        'faster_whisper': 'faster-whisper'
-    }
+    def check_python_version(self):
+        """Перевірка версії Python"""
+        version = sys.version_info
+        if version.major < 3 or (version.major == 3 and version.minor < 7):
+            print(f"❌ Потрібен Python 3.7 або новіший. Ваша версія: {sys.version}")
+            input("Натисніть Enter для виходу...")
+            sys.exit(1)
+        print(f"✅ Python версія: {sys.version}")
 
-    # Перевірка ОС та доступності CUDA
-    system = platform.system()
-    cuda_available = False
+    def install_pip_package(self, package_name, import_name=None):
+        """Встановлення Python пакету"""
+        if import_name is None:
+            import_name = package_name.split('[')[0]  # для пакетів типу package[extra]
 
-    print("🔍 Перевірка системи...")
-    print(f"📋 ОС: {system}")
-    print(f"🐍 Версія Python: {sys.version}")
+        try:
+            importlib.import_module(import_name)
+            print(f"✅ {package_name} вже встановлено")
+            return True
+        except ImportError:
+            print(f"📦 Встановлюю {package_name}...")
+            try:
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install",
+                    package_name, "--quiet", "--disable-pip-version-check"
+                ])
+                print(f"✅ {package_name} успішно встановлено")
+                return True
+            except Exception as e:
+                print(f"❌ Помилка встановлення {package_name}: {e}")
+                return False
 
-    # Перевірка наявності NVIDIA GPU та CUDA
+    def install_python_dependencies(self):
+        """Встановлення всіх Python залежностей"""
+        print("\n🔧 Перевірка та встановлення Python бібліотек...")
+
+        packages = {
+            'Pillow': 'PIL',
+            'pytesseract': 'pytesseract',
+            'pynput': 'pynput',
+            'deep-translator': 'deep_translator',
+            'sounddevice': 'sounddevice',
+            'scipy': 'scipy',
+            'numpy': 'numpy',
+        }
+
+        # Спочатку встановлюємо основні пакети
+        for package, import_name in packages.items():
+            self.install_pip_package(package, import_name)
+
+        # Перевірка CUDA для torch
+        cuda_available = self.check_cuda()
+
+        # Встановлення PyTorch
+        if cuda_available:
+            print("🚀 Встановлюю PyTorch з підтримкою CUDA...")
+            torch_cmd = "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+        else:
+            print("💻 Встановлюю PyTorch (CPU версія)...")
+            torch_cmd = "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
+
+        try:
+            import torch
+            print("✅ PyTorch вже встановлено")
+        except ImportError:
+            try:
+                subprocess.check_call([sys.executable, "-m", "pip", "install"] + torch_cmd.split())
+                print("✅ PyTorch встановлено")
+            except Exception as e:
+                print(f"⚠️ Не вдалося встановити PyTorch: {e}")
+
+        # Встановлення Whisper
+        try:
+            importlib.import_module('faster_whisper')
+            print("✅ faster-whisper вже встановлено")
+        except ImportError:
+            print("📦 Встановлюю faster-whisper...")
+            self.install_pip_package('faster-whisper', 'faster_whisper')
+
+    def check_cuda(self):
+        """Перевірка доступності CUDA"""
+        try:
+            if self.system == "Windows":
+                result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, shell=True)
+                return result.returncode == 0
+            elif self.system in ["Linux", "Darwin"]:
+                result = subprocess.run(['which', 'nvidia-smi'], capture_output=True, text=True)
+                if result.returncode == 0:
+                    result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
+                    return result.returncode == 0
+        except:
+            pass
+        return False
+
+    def download_tesseract(self):
+        """Завантаження Tesseract OCR"""
+        if self.system != "Windows":
+            print("\n⚠️ Автоматичне встановлення Tesseract доступне тільки для Windows")
+            print("\nДля Linux виконайте: sudo apt-get install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-eng")
+            print("Для macOS виконайте: brew install tesseract tesseract-lang")
+            input("\nНатисніть Enter після встановлення...")
+            return None
+
+        if self.tesseract_exe.exists():
+            print(f"✅ Tesseract вже встановлено: {self.tesseract_exe}")
+            return str(self.tesseract_exe)
+
+        print("\n📥 Завантажую Tesseract OCR...")
+        print("⏳ Це може зайняти кілька хвилин...")
+
+        try:
+            # URL для завантаження Tesseract (портативна версія)
+            tesseract_url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe"
+            installer_path = self.app_dir / "tesseract_installer.exe"
+
+            print(f"📡 Завантажую з {tesseract_url}")
+
+            # Завантаження файлу з прогрес-баром
+            def download_progress(block_num, block_size, total_size):
+                downloaded = block_num * block_size
+                percent = min(downloaded * 100 / total_size, 100)
+                bar_length = 40
+                filled = int(bar_length * percent / 100)
+                bar = '█' * filled + '░' * (bar_length - filled)
+                print(f'\r[{bar}] {percent:.1f}%', end='', flush=True)
+
+            urllib.request.urlretrieve(tesseract_url, installer_path, reporthook=download_progress)
+            print("\n✅ Завантаження завершено")
+
+            # Запуск інсталятора
+            print("\n📦 Запускаю інсталятор Tesseract...")
+            print("⚠️ ВАЖЛИВО: Під час встановлення:")
+            print("   1. Виберіть шлях встановлення або використайте стандартний")
+            print("   2. Обов'язково виберіть мови: English та Ukrainian")
+            print("   3. Запам'ятайте шлях встановлення!")
+
+            input("\nНатисніть Enter для запуску інсталятора...")
+
+            subprocess.run([str(installer_path)], check=False)
+
+            # Видалення інсталятора
+            try:
+                installer_path.unlink()
+            except:
+                pass
+
+            print("\n✅ Tesseract встановлено")
+            print("\n📝 Тепер мені потрібен шлях до tesseract.exe")
+            print("Стандартний шлях: C:\\Program Files\\Tesseract-OCR\\tesseract.exe")
+
+            tesseract_path = input(
+                "\nВведіть повний шлях до tesseract.exe (або натисніть Enter для стандартного): ").strip()
+
+            if not tesseract_path:
+                tesseract_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+            if Path(tesseract_path).exists():
+                print(f"✅ Знайдено Tesseract: {tesseract_path}")
+                return tesseract_path
+            else:
+                print(f"❌ Файл не знайдено: {tesseract_path}")
+                print("Спробуйте знайти tesseract.exe вручну та запустіть програму знову")
+                return None
+
+        except Exception as e:
+            print(f"\n❌ Помилка завантаження Tesseract: {e}")
+            print("\n📝 Будь ласка, завантажте Tesseract вручну:")
+            print("   1. Відвідайте: https://github.com/UB-Mannheim/tesseract/wiki")
+            print("   2. Завантажте інсталятор для Windows")
+            print("   3. Встановіть з мовами Ukrainian та English")
+            print("   4. Запустіть цю програму знову")
+            return None
+
+    def find_tesseract(self):
+        """Пошук встановленого Tesseract"""
+        possible_paths = [
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+            self.tesseract_exe,
+        ]
+
+        for path in possible_paths:
+            if Path(path).exists():
+                return str(path)
+
+        # Пошук в PATH
+        if self.system == "Windows":
+            result = subprocess.run(['where', 'tesseract'], capture_output=True, text=True, shell=True)
+        else:
+            result = subprocess.run(['which', 'tesseract'], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            return result.stdout.strip().split('\n')[0]
+
+        return None
+
+    def setup(self):
+        """Головна функція налаштування"""
+        print("=" * 60)
+        print("🚀 Автоматичне налаштування STT + OCR + Translate")
+        print("=" * 60)
+
+        # Перевірка Python
+        self.check_python_version()
+
+        # Встановлення Python бібліотек
+        self.install_python_dependencies()
+
+        # Налаштування Tesseract
+        print("\n🔍 Шукаю Tesseract OCR...")
+        tesseract_path = self.find_tesseract()
+
+        if tesseract_path:
+            print(f"✅ Tesseract знайдено: {tesseract_path}")
+        else:
+            print("❌ Tesseract не знайдено на вашому комп'ютері")
+            tesseract_path = self.download_tesseract()
+
+            if not tesseract_path:
+                print("\n⚠️ Програма може працювати без Tesseract, але OCR функції будуть недоступні")
+                input("Натисніть Enter для продовження...")
+
+        print("\n" + "=" * 60)
+        print("✅ Налаштування завершено!")
+        print("=" * 60)
+
+        return tesseract_path
+
+
+# Автоматичне налаштування при першому запуску
+def auto_setup():
+    """Функція автоматичного налаштування"""
+    installer = AutoInstaller()
+    return installer.setup()
+
+
+# Запуск налаштування
+if __name__ != "__main__":
+    print("🔧 Перевірка залежностей...")
     try:
-        if system == "Windows":
-            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, shell=True)
-            cuda_available = result.returncode == 0
-        elif system in ["Linux", "Darwin"]:
-            result = subprocess.run(['which', 'nvidia-smi'], capture_output=True, text=True)
-            if result.returncode == 0:
-                result = subprocess.run(['nvidia-smi'], capture_output=True, text=True)
-                cuda_available = result.returncode == 0
-    except:
-        cuda_available = False
+        # Швидка перевірка основних бібліотек
+        import tkinter
+        import PIL
+        import pytesseract
 
-    print(f"🎮 CUDA доступна: {'✅' if cuda_available else '❌'}")
-
-    # Визначення версії torch для встановлення
-    if cuda_available:
-        torch_package = "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
-        print("🚀 Використовується версія Torch з підтримкою CUDA")
-    else:
-        torch_package = "torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu"
-        print("⚡ Використовується CPU-версія Torch")
-
-    required_libraries['torch'] = torch_package
-
-    # Список бібліотек для встановлення
-    libraries_to_install = []
-
-    print("\n🔍 Перевірка бібліотек...")
-
-    # Перевірка основних бібліотек
-    for lib_name, pip_name in required_libraries.items():
-        try:
-            importlib.import_module(lib_name)
-            print(f"✅ {lib_name} вже встановлено")
-        except ImportError:
-            print(f"❌ {lib_name} не знайдено, додано до встановлення")
-            libraries_to_install.append(pip_name)
-
-    # Перевірка бібліотек Whisper
-    whisper_missing = []
-    for lib_name, pip_name in whisper_libraries.items():
-        try:
-            importlib.import_module(lib_name)
-            print(f"✅ {lib_name} вже встановлено")
-        except ImportError:
-            print(f"❌ {lib_name} не знайдено")
-            whisper_missing.append(pip_name)
-
-    # Встановлення відсутніх бібліотек
-    if libraries_to_install or whisper_missing:
-        print(f"\n📦 Встановлення {len(libraries_to_install) + len(whisper_missing)} бібліотек...")
-
-        # Встановлення основних бібліотек
-        for lib in libraries_to_install:
-            try:
-                print(f"⬇️ Встановлення {lib}...")
-                if lib.startswith("torch"):
-                    # Спеціальна обробка для torch
-                    subprocess.check_call([sys.executable, "-m", "pip", "install"] + lib.split())
-                else:
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
-                print(f"✅ {lib} успішно встановлено")
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Помилка встановлення {lib}: {e}")
-
-        # Встановлення бібліотек Whisper після torch
-        for lib in whisper_missing:
-            try:
-                print(f"⬇️ Встановлення {lib}...")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", lib])
-                print(f"✅ {lib} успішно встановлено")
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Помилка встановлення {lib}: {e}")
-
-        print("\n🔄 Перезавантажте програму для застосування змін")
+        TESSERACT_PATH = None
+    except ImportError:
+        print("⚠️ Потрібне налаштування системи...")
+        TESSERACT_PATH = auto_setup()
+        print("\n🔄 Перезапустіть програму для застосування змін")
         input("Натисніть Enter для виходу...")
         sys.exit(0)
-    else:
-        print("\n✅ Всі бібліотеки встановлено та готові до роботи!")
 
-
-# Виконання перевірки бібліотек
-# if __name__ != "__main__":
-#     check_and_install_libraries()
+# ==================== ОСНОВНИЙ КОД ПРОГРАМИ ====================
 
 import io
 import tkinter as tk
@@ -134,8 +288,45 @@ import sounddevice as sd
 from scipy.io.wavfile import write
 import queue
 
-# === Вкажи шлях до tesseract.exe, якщо потрібно ===
-pytesseract.pytesseract.tesseract_cmd = r"D:\\Games\\tesseract_ocr\\tesseract.exe"
+
+# Автоматичне визначення шляху до Tesseract
+def setup_tesseract():
+    """Налаштування шляху до Tesseract"""
+    possible_paths = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        Path(__file__).parent / "tesseract" / "tesseract.exe",
+    ]
+
+    for path in possible_paths:
+        if Path(path).exists():
+            pytesseract.pytesseract.tesseract_cmd = str(path)
+            print(f"✅ Tesseract знайдено: {path}")
+            return True
+
+    # Пошук в системному PATH
+    system = platform.system()
+    try:
+        if system == "Windows":
+            result = subprocess.run(['where', 'tesseract'], capture_output=True, text=True, shell=True)
+        else:
+            result = subprocess.run(['which', 'tesseract'], capture_output=True, text=True)
+
+        if result.returncode == 0:
+            tesseract_path = result.stdout.strip().split('\n')[0]
+            pytesseract.pytesseract.tesseract_cmd = tesseract_path
+            print(f"✅ Tesseract знайдено: {tesseract_path}")
+            return True
+    except:
+        pass
+
+    print("⚠️ Tesseract не знайдено. OCR функції будуть недоступні.")
+    print("Завантажте Tesseract: https://github.com/UB-Mannheim/tesseract/wiki")
+    return False
+
+
+# Налаштування Tesseract
+TESSERACT_AVAILABLE = setup_tesseract()
 
 # Перевірка Whisper і CUDA
 try:
@@ -148,17 +339,11 @@ try:
     if CUDA_AVAILABLE:
         print(f"✅ CUDA доступна! GPU: {torch.cuda.get_device_name(0)}")
     else:
-        print("⚠️ CUDA недоступна, використовується CPU")
-
-except ImportError as e:
+        print("⚡ Використовується CPU для Whisper")
+except ImportError:
     WHISPER_AVAILABLE = False
     CUDA_AVAILABLE = False
-    print(f"❌ Whisper не встановлено: {e}")
-    print("Встановіть командою: pip install faster-whisper torch sounddevice scipy")
-
-# Спрощені значення для швидкого запуску
-WHISPER_AVAILABLE = False
-CUDA_AVAILABLE = False
+    print("⚠️ Whisper недоступний. STT функції будуть обмежені.")
 
 
 class FullRecorder:
@@ -173,7 +358,6 @@ class FullRecorder:
     def _callback(self, indata, frames, time, status):
         if status:
             print("Record status:", status)
-        # copy to avoid referencing same buffer
         self._q.put(indata.copy())
 
     def start(self):
@@ -192,7 +376,6 @@ class FullRecorder:
             self._stream.close()
             self._stream = None
 
-        # drain queue into frames list
         while not self._q.empty():
             self._frames.append(self._q.get())
 
@@ -222,7 +405,8 @@ class ScreenSelector(tk.Toplevel):
         self.start_x = self.canvas.canvasx(event.x)
         self.start_y = self.canvas.canvasy(event.y)
         self.rect = self.canvas.create_rectangle(
-            self.start_x, self.start_y, self.start_x, self.start_y, outline='red', width=2)
+            self.start_x, self.start_y, self.start_x, self.start_y,
+            outline='red', width=2)
 
     def on_drag(self, event):
         cur_x, cur_y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
@@ -240,11 +424,14 @@ class ScreenSelector(tk.Toplevel):
         self.after(100, lambda: self.capture_area(x1, y1, x2, y2))
 
     def capture_area(self, x1, y1, x2, y2):
-        try:
-            img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
-            text = pytesseract.image_to_string(img, lang='ukr+eng')
-        except Exception as e:
-            text = f"[OCR помилка: {e}]"
+        if not TESSERACT_AVAILABLE:
+            text = "[OCR недоступний: Tesseract не встановлено]"
+        else:
+            try:
+                img = ImageGrab.grab(bbox=(x1, y1, x2, y2))
+                text = pytesseract.image_to_string(img, lang='ukr+eng')
+            except Exception as e:
+                text = f"[OCR помилка: {e}]"
 
         self.callback(text)
         self.destroy()
@@ -287,12 +474,12 @@ class ScreenDrawer(tk.Toplevel):
 
     def create_sidebar(self):
         """Створення бокової панелі з інструментами"""
-        sidebar_width = 250
         self.sidebar = tk.Frame(self, bg='#2b2b2b', width=250, height=self.winfo_screenheight())
         self.sidebar.place(relx=1.0, rely=0, anchor="ne")
         self.sidebar.pack_propagate(False)
 
-        title = tk.Label(self.sidebar, text="🎨 Малювалка", bg='#2b2b2b', fg='white', font=('Arial', 12, 'bold'))
+        title = tk.Label(self.sidebar, text="🎨 Малювалка", bg='#2b2b2b',
+                         fg='white', font=('Arial', 12, 'bold'))
         title.pack(pady=10)
 
         tools_frame = tk.LabelFrame(self.sidebar, text="Інструменти", bg='#2b2b2b', fg='white')
@@ -359,17 +546,12 @@ class ScreenDrawer(tk.Toplevel):
                                resolution=0.1, command=self.update_alpha)
         alpha_scale.pack(fill=tk.X, padx=5, pady=5)
 
-        self.transparent_mode = tk.BooleanVar(value=False)
-        tk.Checkbutton(alpha_frame, text="Прозорий режим", variable=self.transparent_mode,
-                       bg='#2b2b2b', fg='white', selectcolor='#404040',
-                       command=self.toggle_transparent_mode).pack(padx=5, pady=2)
-
         actions_frame = tk.LabelFrame(self.sidebar, text="Дії", bg='#2b2b2b', fg='white')
         actions_frame.pack(fill=tk.X, padx=10, pady=5)
 
         actions = [
             ("↩️ Скасувати (Ctrl+Z)", self.undo),
-            ("🗑️ Очистити все (Ctrl+C)", self.clear_all),
+            ("🗑️ Очистити все (Del)", self.clear_all),
             ("💾 Зберегти (Ctrl+S)", self.save_drawing),
             ("❌ Закрити (Esc)", self.close_drawer)
         ]
@@ -377,13 +559,6 @@ class ScreenDrawer(tk.Toplevel):
         for text, command in actions:
             tk.Button(actions_frame, text=text, bg='#404040', fg='white',
                       command=command).pack(fill=tk.X, pady=2, padx=5)
-
-        info_frame = tk.LabelFrame(self.sidebar, text="Інформація", bg='#2b2b2b', fg='white')
-        info_frame.pack(fill=tk.X, padx=10, pady=5)
-
-        info_text = "Гарячі клавіші:\nEsc - Закрити\nCtrl+Z - Скасувати\nCtrl+C - Очистити\nCtrl+S - Зберегти"
-        tk.Label(info_frame, text=info_text, bg='#2b2b2b', fg='white',
-                 justify=tk.LEFT, font=('Arial', 8)).pack(padx=5, pady=5)
 
     def set_tool(self, tool):
         self.current_tool = tool
@@ -393,7 +568,6 @@ class ScreenDrawer(tk.Toplevel):
                     if isinstance(btn, tk.Button):
                         if tool in btn.cget('text').lower():
                             btn.configure(bg='#ff4444')
-                            self.current_tool_btn = btn
                         else:
                             btn.configure(bg='#404040')
 
@@ -402,63 +576,15 @@ class ScreenDrawer(tk.Toplevel):
         self.color_preview.configure(bg=color)
 
     def choose_color(self):
-        self.attributes('-topmost', False)
-        color_window = tk.Toplevel(self)
-        color_window.title("Вибір кольору")
-        color_window.geometry("400x300")
-        color_window.configure(bg='#2b2b2b')
-        color_window.attributes('-topmost', True)
-        color_window.grab_set()
-
-        colors_grid = [
-            ['#FF0000', '#FF4500', '#FF8C00', '#FFD700', '#FFFF00', '#ADFF2F', '#00FF00', '#00FA9A'],
-            ['#00FFFF', '#00BFFF', '#0080FF', '#0000FF', '#4169E1', '#8A2BE2', '#9400D3', '#FF00FF'],
-            ['#FF1493', '#DC143C', '#B22222', '#A0522D', '#8B4513', '#2F4F4F', '#708090', '#778899'],
-            ['#FFFFFF', '#F5F5F5', '#DCDCDC', '#C0C0C0', '#808080', '#696969', '#2F2F2F', '#000000']
-        ]
-
-        tk.Label(color_window, text="Виберіть колір:", bg='#2b2b2b', fg='white',
-                 font=('Arial', 12)).pack(pady=10)
-
-        colors_frame = tk.Frame(color_window, bg='#2b2b2b')
-        colors_frame.pack(pady=10)
-
-        def select_color(color):
+        color = colorchooser.askcolor(title="Виберіть колір")[1]
+        if color:
             self.set_color(color)
-            color_window.destroy()
-
-        for row_idx, row in enumerate(colors_grid):
-            for col_idx, color in enumerate(row):
-                btn = tk.Button(colors_frame, bg=color, width=4, height=2,
-                                command=lambda c=color: select_color(c),
-                                relief='raised', bd=2)
-                btn.grid(row=row_idx, column=col_idx, padx=2, pady=2)
-
-        tk.Button(color_window, text="Закрити", bg='#404040', fg='white',
-                  command=color_window.destroy).pack(pady=20)
 
     def update_size(self, value):
         self.brush_size = int(value)
 
     def update_alpha(self, value):
-        alpha = float(value)
-        self.attributes('-alpha', alpha)
-        if alpha < 0.7:
-            self.canvas.configure(bg='gray5')
-            self.configure(bg='gray5')
-        else:
-            self.canvas.configure(bg='gray10')
-            self.configure(bg='gray20')
-
-    def toggle_transparent_mode(self):
-        if self.transparent_mode.get():
-            self.alpha_var.set(0.3)
-            self.update_alpha(0.3)
-            self.canvas.configure(bg='')
-            self.configure(bg='')
-        else:
-            self.alpha_var.set(0.9)
-            self.update_alpha(0.9)
+        self.attributes('-alpha', float(value))
 
     def start_draw(self, event):
         self.drawing = True
@@ -470,9 +596,10 @@ class ScreenDrawer(tk.Toplevel):
             self.erase_at_point(event.x, event.y)
         elif self.current_tool in ["brush", "pencil"]:
             width = self.brush_size if self.current_tool == "brush" else max(1, self.brush_size // 2)
-            point = self.canvas.create_oval(event.x - width // 2, event.y - width // 2,
-                                            event.x + width // 2, event.y + width // 2,
-                                            fill=self.current_color, outline=self.current_color)
+            point = self.canvas.create_oval(
+                event.x - width // 2, event.y - width // 2,
+                event.x + width // 2, event.y + width // 2,
+                fill=self.current_color, outline=self.current_color)
             self.shapes.append(point)
 
     def draw(self, event):
@@ -481,9 +608,10 @@ class ScreenDrawer(tk.Toplevel):
 
         if self.current_tool in ["brush", "pencil"]:
             width = self.brush_size if self.current_tool == "brush" else max(1, self.brush_size // 2)
-            line_id = self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
-                                              fill=self.current_color, width=width,
-                                              capstyle=tk.ROUND, smooth=True)
+            line_id = self.canvas.create_line(
+                self.start_x, self.start_y, event.x, event.y,
+                fill=self.current_color, width=width,
+                capstyle=tk.ROUND, smooth=True)
             self.shapes.append(line_id)
             self.start_x, self.start_y = event.x, event.y
 
@@ -493,7 +621,7 @@ class ScreenDrawer(tk.Toplevel):
         elif self.current_tool in ["line", "rectangle", "circle", "ellipse", "arrow"]:
             if self.temp_shape:
                 self.canvas.delete(self.temp_shape)
-            self.temp_shape = self.draw_shape(self.start_x, self.start_y, event.x, event.y, temp=True)
+            self.temp_shape = self.draw_shape(self.start_x, self.start_y, event.x, event.y)
 
     def end_draw(self, event):
         self.drawing = False
@@ -826,16 +954,16 @@ class EnhancedApp:
 
     # def initial_show_hide(self):
     #     """Правильна ініціалізація стану вікна"""
-    # 
+    #
     #     def do_hide():
     #         # Спочатку показуємо вікно, щоб воно було доступне
     #         self.root.deiconify()
     #         self.root.update_idletasks()
-    # 
+    #
     #         # Потім приховуємо його для фонового режиму
     #         self.root.withdraw()
     #         print("[Init] Програма запущена в фоновому режимі. Натисніть Ctrl+Shift+Q для показу.")
-    # 
+    #
     #     # Викликаємо з невеликою затримкою, щоб усе ініціалізувалося
     #     self.root.after(500, do_hide)
 
@@ -1112,10 +1240,10 @@ class EnhancedApp:
                 # Спробуємо імпортувати Whisper
                 from faster_whisper import WhisperModel
                 import torch
-                
+
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 compute_type = "float16" if device == "cuda" else "int8"
-                
+
                 self.whisper_model = WhisperModel(
                     self.whisper_model_size,
                     device=device,
