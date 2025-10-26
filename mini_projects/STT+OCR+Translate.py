@@ -115,8 +115,8 @@ def check_and_install_libraries():
 
 
 # Виконання перевірки бібліотек
-if __name__ != "__main__":
-    check_and_install_libraries()
+# if __name__ != "__main__":
+#     check_and_install_libraries()
 
 import io
 import tkinter as tk
@@ -124,7 +124,6 @@ from tkinter import ttk, scrolledtext, messagebox, colorchooser, font
 from PIL import ImageGrab, ImageEnhance, ImageFilter, Image, ImageDraw, ImageTk
 import pytesseract
 import threading
-import pkg_resources
 from deep_translator import GoogleTranslator
 from pynput import keyboard
 import time
@@ -156,6 +155,10 @@ except ImportError as e:
     CUDA_AVAILABLE = False
     print(f"❌ Whisper не встановлено: {e}")
     print("Встановіть командою: pip install faster-whisper torch sounddevice scipy")
+
+# Спрощені значення для швидкого запуску
+WHISPER_AVAILABLE = False
+CUDA_AVAILABLE = False
 
 
 class FullRecorder:
@@ -707,11 +710,11 @@ class EnhancedApp:
         self.hotkey_listener = None
 
         self.build_enhanced_ui()
-        self.setup_hotkey()
+        # self.setup_hotkey()  # Закоментовано для швидкого запуску
         self.load_settings()
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.after(100, self.initial_show_hide)
+        # self.root.after(100, self.initial_show_hide)  # Закоментовано для швидкого запуску
 
     def build_enhanced_ui(self):
         menubar = tk.Menu(self.root)
@@ -735,7 +738,7 @@ class EnhancedApp:
         ttk.Button(toolbar, text="🎨", command=self.open_drawer, width=3).pack(side=tk.LEFT, padx=2)
 
         self.status_var = tk.StringVar()
-        self.status_var.set("Готовий до роботи | Whisper: " + ("CUDA ✅" if CUDA_AVAILABLE else "CPU ⚠️"))
+        self.status_var.set("Готовий до роботи | Whisper: Завантажиться при потребі")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
@@ -821,20 +824,20 @@ class EnhancedApp:
             widget.bind("<Control-v>", self.paste_event)
             widget.bind("<Control-a>", self.select_all_event)
 
-    def initial_show_hide(self):
-        """Правильна ініціалізація стану вікна"""
-
-        def do_hide():
-            # Спочатку показуємо вікно, щоб воно було доступне
-            self.root.deiconify()
-            self.root.update_idletasks()
-
-            # Потім приховуємо його для фонового режиму
-            self.root.withdraw()
-            print("[Init] Програма запущена в фоновому режимі. Натисніть Ctrl+Shift+Q для показу.")
-
-        # Викликаємо з невеликою затримкою, щоб усе ініціалізувалося
-        self.root.after(500, do_hide)
+    # def initial_show_hide(self):
+    #     """Правильна ініціалізація стану вікна"""
+    # 
+    #     def do_hide():
+    #         # Спочатку показуємо вікно, щоб воно було доступне
+    #         self.root.deiconify()
+    #         self.root.update_idletasks()
+    # 
+    #         # Потім приховуємо його для фонового режиму
+    #         self.root.withdraw()
+    #         print("[Init] Програма запущена в фоновому режимі. Натисніть Ctrl+Shift+Q для показу.")
+    # 
+    #     # Викликаємо з невеликою затримкою, щоб усе ініціалізувалося
+    #     self.root.after(500, do_hide)
 
     def auto_close(self, delay_seconds=0):
         """Автоматичне закриття програми через вказаний час"""
@@ -875,8 +878,9 @@ class EnhancedApp:
                 pass
 
             self.save_settings()
-            self.root.withdraw()
-            print("✅ Вікно приховано, процес активний у фоні.")
+            # self.root.withdraw()  # Закоментовано - закриваємо повністю
+            self.root.destroy()  # Повне закриття замість приховування
+            print("✅ Програма закрита.")
 
         except Exception as e:
             print(f"⚠️ Помилка при закритті: {e}")
@@ -911,35 +915,35 @@ class EnhancedApp:
         except Exception as e:
             print(f"Помилка приховування вікна: {e}")
 
-    def setup_hotkey(self):
-        """Налаштування гарячих клавіш (без виклику GUI з чужого потоку)"""
-        import queue
-        self.hotkey_queue = queue.Queue()
+    # def setup_hotkey(self):
+    #     """Налаштування гарячих клавіш (без виклику GUI з чужого потоку)"""
+    #     import queue
+    #     self.hotkey_queue = queue.Queue()
 
-        def on_activate():
-            # кладемо подію в чергу, а не викликаємо GUI прямо
-            self.hotkey_queue.put("toggle")
+    #     def on_activate():
+    #         # кладемо подію в чергу, а не викликаємо GUI прямо
+    #         self.hotkey_queue.put("toggle")
 
-        def listen():
-            try:
-                hotkey = keyboard.HotKey(
-                    keyboard.HotKey.parse('<ctrl>+<shift>+q'),
-                    on_activate
-                )
+    #     def listen():
+    #         try:
+    #             hotkey = keyboard.HotKey(
+    #                 keyboard.HotKey.parse('<ctrl>+<shift>+q'),
+    #                 on_activate
+    #             )
 
-                self.hotkey_listener = keyboard.Listener(
-                    on_press=lambda k: hotkey.press(self.hotkey_listener.canonical(k)),
-                    on_release=lambda k: hotkey.release(self.hotkey_listener.canonical(k))
-                )
-                self.hotkey_listener.start()
-                print("Гарячі клавіши активовані: Ctrl+Shift+Q")
-            except Exception as e:
-                print(f"Помилка гарячих клавіш: {e}")
-                time.sleep(5)
-                listen()
+    #             self.hotkey_listener = keyboard.Listener(
+    #                 on_press=lambda k: hotkey.press(self.hotkey_listener.canonical(k)),
+    #                 on_release=lambda k: hotkey.release(self.hotkey_listener.canonical(k))
+    #             )
+    #             self.hotkey_listener.start()
+            #     print("Гарячі клавіши активовані: Ctrl+Shift+Q")
+            # except Exception as e:
+            #     print(f"Помилка гарячих клавіш: {e}")
+            #     time.sleep(5)
+            #     listen()
 
         # Фоновий потік для pynput
-        threading.Thread(target=listen, daemon=True).start()
+        # threading.Thread(target=listen, daemon=True).start()
 
         # Перевіряємо чергу з головного потоку кожні 200 мс
         def check_queue():
@@ -1055,7 +1059,7 @@ class EnhancedApp:
                     segments, info = self.whisper_model.transcribe(
                         audio_array,
                         beam_size=5,
-                        language=None,  # авто
+                        language="uk",  # авто
                         task="transcribe",
                     )
 
@@ -1079,8 +1083,12 @@ class EnhancedApp:
 
                     self.root.after(0, gui_update)
 
-                except Exception as e:
-                    self.root.after(0, lambda: self.update_mic_status(f"❌ Помилка транскрипції: {e}"))
+                except Exception as error_s:
+                    error_msg = str(error_s)
+                    if "Whisper не доступний" in error_msg:
+                        self.root.after(0, lambda: self.update_mic_status("❌ Whisper не встановлено. Використовуйте OCR або введіть текст вручну."))
+                    else:
+                        self.root.after(0, lambda: self.update_mic_status(f"❌ Помилка транскрипції: {error_msg}"))
 
             self.transcribe_thread = threading.Thread(target=transcribe_job, args=(audio,), daemon=True)
             self.transcribe_thread.start()
@@ -1100,9 +1108,14 @@ class EnhancedApp:
     def load_whisper_model(self):
         if self.whisper_model is None:
             self.update_status("⏳ Завантаження Whisper моделі...")
-            device = "cuda" if CUDA_AVAILABLE else "cpu"
-            compute_type = "float16" if device == "cuda" else "int8"
             try:
+                # Спробуємо імпортувати Whisper
+                from faster_whisper import WhisperModel
+                import torch
+                
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                compute_type = "float16" if device == "cuda" else "int8"
+                
                 self.whisper_model = WhisperModel(
                     self.whisper_model_size,
                     device=device,
@@ -1110,6 +1123,9 @@ class EnhancedApp:
                 )
                 dev_info = f"GPU ({torch.cuda.get_device_name(0)})" if device == "cuda" else "CPU"
                 self.update_status(f"✅ Whisper готовий ({dev_info})")
+            except ImportError:
+                self.update_status("❌ Whisper не встановлено. Встановіть: pip install faster-whisper torch")
+                raise Exception("Whisper не доступний")
             except Exception as e:
                 self.update_status(f"❌ Помилка завантаження Whisper: {e}")
                 raise
@@ -1192,7 +1208,7 @@ if __name__ == "__main__":
     style = ttk.Style()
     style.theme_use('clam')
     app = EnhancedApp(root)
-    root.after(100, app.initial_show_hide)
+    # root.after(100, app.initial_show_hide)  # Закоментовано для швидкого запуску
     root.mainloop()
 
 
