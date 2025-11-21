@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sys
 import subprocess
 import importlib
@@ -25,7 +26,7 @@ class AutoInstaller:
             print(f"❌ Потрібен Python 3.7 або новіший. Ваша версія: {sys.version}")
             input("Натисніть Enter для виходу...")
             sys.exit(1)
-        print(f"✅ Python версія: {sys.version}")
+        print(f"✅ Python версія: {version.major}.{version.minor}.{version.micro}")
 
     def install_pip_package(self, package_name, import_name=None):
         """Встановлення Python пакету"""
@@ -123,8 +124,8 @@ class AutoInstaller:
             # Створюємо директорію для Tesseract
             self.tesseract_dir.mkdir(exist_ok=True)
 
-            # URL портативної версії Tesseract
-            zip_url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.3.3.20231005.exe"
+            # Оновлений URL портативної версії Tesseract
+            zip_url = "https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.4.0.20240606.exe"
             installer_path = self.app_dir / "tesseract_setup.exe"
 
             def show_progress(block_num, block_size, total_size):
@@ -179,9 +180,9 @@ class AutoInstaller:
 
         except Exception as e:
             print(f"\n❌ Помилка: {e}")
-            print("\n📝 Альтернатива - встановіть Tesseract вручну:")
+            print("\n🔍 Альтернатива - встановіть Tesseract вручну:")
             print("   1. Відвідайте: https://github.com/UB-Mannheim/tesseract/wiki")
-            print("   2. Завантажте 'tesseract-ocr-w64-setup-5.3.x.exe'")
+            print("   2. Завантажте 'tesseract-ocr-w64-setup-5.x.x.exe'")
             print("   3. Встановіть з мовами Ukrainian + English")
             return None
 
@@ -241,7 +242,7 @@ class AutoInstaller:
 
 import io
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, colorchooser
+from tkinter import ttk, scrolledtext, messagebox
 from PIL import ImageGrab, ImageEnhance, ImageFilter, Image
 import pytesseract
 import threading
@@ -294,46 +295,81 @@ except ImportError:
 
 
 class FullRecorder:
+    """Клас для запису аудіо з покращеною обробкою"""
+
     def __init__(self, samplerate=16000, channels=1, dtype='float32'):
         self.samplerate = samplerate
         self.channels = channels
         self.dtype = dtype
         self._frames = []
         self._stream = None
-        self._q = queue.Queue()
+        self._recording = False
 
-    def _callback(self, indata, frames, time, status):
+    def _callback(self, indata, frames, time_info, status):
+        """Callback для запису аудіо"""
         if status:
-            print("Record status:", status)
-        self._q.put(indata.copy())
+            print(f"⚠️ Статус запису: {status}")
+        if self._recording:
+            # Копіюємо дані одразу в список
+            self._frames.append(indata.copy())
 
     def start(self):
+        """Початок запису"""
         self._frames = []
-        self._stream = sd.InputStream(
-            samplerate=self.samplerate,
-            channels=self.channels,
-            dtype=self.dtype,
-            callback=self._callback
-        )
-        self._stream.start()
+        self._recording = True
+        try:
+            self._stream = sd.InputStream(
+                samplerate=self.samplerate,
+                channels=self.channels,
+                dtype=self.dtype,
+                callback=self._callback,
+                blocksize=1024  # Оптимальний розмір блоку
+            )
+            self._stream.start()
+            print(f"✅ Запис розпочато: {self.samplerate}Hz, {self.channels} канал(и)")
+        except Exception as e:
+            print(f"❌ Помилка початку запису: {e}")
+            self._recording = False
+            raise
 
     def stop(self):
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        """Зупинка запису та повернення аудіо"""
+        self._recording = False
 
-        while not self._q.empty():
-            self._frames.append(self._q.get())
+        if self._stream:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception as e:
+                print(f"⚠️ Помилка закриття потоку: {e}")
+            finally:
+                self._stream = None
+
+        # Даємо час на завершення callback
+        time.sleep(0.1)
 
         if not self._frames:
+            print("⚠️ Не записано жодного фрейму")
             return np.zeros(0, dtype='float32')
 
-        audio = np.concatenate([f.reshape(-1) if f.ndim > 1 else f for f in self._frames])
-        return audio.astype('float32')
+        try:
+            # Об'єднуємо всі фрейми
+            audio = np.concatenate(self._frames, axis=0)
+
+            # Переводимо в одновимірний масив якщо потрібно
+            if audio.ndim > 1:
+                audio = audio.flatten()
+
+            print(f"✅ Записано {len(audio)} сампли ({len(audio) / self.samplerate:.2f} секунд)")
+            return audio.astype('float32')
+        except Exception as e:
+            print(f"❌ Помилка обробки аудіо: {e}")
+            return np.zeros(0, dtype='float32')
 
 
 class ScreenSelector(tk.Toplevel):
+    """Віджет для вибору області екрану"""
+
     def __init__(self, callback):
         super().__init__()
         self.callback = callback
@@ -371,6 +407,7 @@ class ScreenSelector(tk.Toplevel):
         self.after(100, lambda: self.capture_area(x1, y1, x2, y2))
 
     def capture_area(self, x1, y1, x2, y2):
+        """Захоплення та розпізнавання області"""
         if not TESSERACT_AVAILABLE:
             text = "[OCR недоступний: Tesseract не встановлено]\n\nДля встановлення:\n1. Завантажте з https://github.com/UB-Mannheim/tesseract/wiki\n2. Встановіть з мовами Ukrainian + English"
             self.callback(text)
@@ -393,23 +430,28 @@ class ScreenSelector(tk.Toplevel):
 
 
 class ScreenDrawer(tk.Toplevel):
+    """Малювалка на весь екран з повноцінним боковим меню"""
+
     def __init__(self, app_instance):
         super().__init__()
         self.app_instance = app_instance
 
         self.attributes('-fullscreen', True)
-        self.attributes('-alpha', 0.9)
-        self.configure(bg='gray20')
+        self.attributes('-alpha', 0.95)
+        self.configure(bg='#1a1a1a')
 
         self.current_tool = "brush"
         self.current_color = "#ff0000"
-        self.brush_size = 3
+        self.brush_size = 5
+        self.eraser_size = 20
         self.start_x = self.start_y = 0
         self.shapes = []
         self.temp_shape = None
         self.drawing = False
+        self.tool_buttons = {}
 
-        self.canvas = tk.Canvas(self, highlightthickness=0, bg='gray10', cursor="crosshair")
+        # Canvas для малювання
+        self.canvas = tk.Canvas(self, highlightthickness=0, bg='#0d0d0d', cursor="crosshair")
         self.canvas.pack(fill="both", expand=True)
 
         self.canvas.bind("<Button-1>", self.start_draw)
@@ -418,57 +460,175 @@ class ScreenDrawer(tk.Toplevel):
 
         self.bind_all("<Escape>", self.close_drawer)
         self.bind_all("<Control-z>", self.undo)
+        self.bind_all("<Control-c>", self.clear_canvas)
 
         self.focus_set()
-        self.after(100, self.create_sidebar)
+        self.create_sidebar()
 
     def create_sidebar(self):
-        self.sidebar = tk.Frame(self, bg='#2b2b2b', width=250)
-        self.sidebar.place(relx=1.0, rely=0, anchor="ne")
+        """Створення бічної панелі інструментів"""
+        self.sidebar = tk.Frame(self, bg='#2b2b2b', width=280, height=self.winfo_screenheight())
+        self.sidebar.place(relx=1.0, rely=0, anchor="ne", relheight=1.0)
         self.sidebar.pack_propagate(False)
 
+        # Заголовок
         title = tk.Label(self.sidebar, text="🎨 Малювалка", bg='#2b2b2b',
-                         fg='white', font=('Arial', 12, 'bold'))
-        title.pack(pady=10)
+                         fg='white', font=('Arial', 14, 'bold'))
+        title.pack(pady=15)
 
-        tools_frame = tk.LabelFrame(self.sidebar, text="Інструменти", bg='#2b2b2b', fg='white')
+        # Інструменти
+        tools_frame = tk.LabelFrame(self.sidebar, text="📐 Інструменти",
+                                    bg='#2b2b2b', fg='white', font=('Arial', 10, 'bold'))
         tools_frame.pack(fill=tk.X, padx=10, pady=5)
 
         tools = [
-            ("🖌️ Пензель", "brush"),
-            ("✏️ Олівець", "pencil"),
-            ("📏 Лінія", "line"),
-            ("⬜ Прямокутник", "rectangle"),
-            ("🧽 Ластик", "eraser")
+            ("🖌️ Пензель", "brush", "#404040"),
+            ("✏️ Олівець", "pencil", "#404040"),
+            ("📏 Лінія", "line", "#404040"),
+            ("⬜ Прямокутник", "rectangle", "#404040"),
+            ("⭕ Коло", "circle", "#404040"),
+            ("🧽 Ластик", "eraser", "#404040"),
         ]
 
-        for text, tool in tools:
-            btn = tk.Button(tools_frame, text=text, bg='#404040', fg='white',
+        for text, tool, color in tools:
+            btn = tk.Button(tools_frame, text=text, bg=color, fg='white',
+                            font=('Arial', 10), relief=tk.RAISED, bd=2,
                             command=lambda t=tool: self.set_tool(t))
-            btn.pack(fill=tk.X, pady=2, padx=5)
+            btn.pack(fill=tk.X, pady=3, padx=5)
+            self.tool_buttons[tool] = btn
 
-        size_frame = tk.LabelFrame(self.sidebar, text="Розмір", bg='#2b2b2b', fg='white')
+        # Виділяємо активний інструмент
+        self.tool_buttons["brush"].config(bg='#00aa00', relief=tk.SUNKEN)
+
+        # Колір
+        color_frame = tk.LabelFrame(self.sidebar, text="🎨 Колір",
+                                    bg='#2b2b2b', fg='white', font=('Arial', 10, 'bold'))
+        color_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # Попередній перегляд кольору
+        self.color_preview = tk.Canvas(color_frame, width=200, height=40,
+                                       bg=self.current_color, highlightthickness=2,
+                                       highlightbackground='white')
+        self.color_preview.pack(pady=5, padx=5)
+
+        # Швидкі кольори
+        quick_colors_frame = tk.Frame(color_frame, bg='#2b2b2b')
+        quick_colors_frame.pack(pady=5)
+
+        colors = [
+            "#ff0000", "#00ff00", "#0000ff", "#ffff00",
+            "#ff00ff", "#00ffff", "#ffffff", "#000000",
+            "#ff8800", "#88ff00", "#0088ff", "#8800ff"
+        ]
+
+        for i, color in enumerate(colors):
+            btn = tk.Button(quick_colors_frame, bg=color, width=3, height=1,
+                            command=lambda c=color: self.set_color(c))
+            btn.grid(row=i // 4, column=i % 4, padx=2, pady=2)
+
+        # Кнопка вибору кольору
+        tk.Button(color_frame, text="🎨 Вибрати колір", bg='#404040', fg='white',
+                  command=self.choose_color).pack(pady=5, padx=5, fill=tk.X)
+
+        # Розмір пензля
+        size_frame = tk.LabelFrame(self.sidebar, text="📏 Розмір",
+                                   bg='#2b2b2b', fg='white', font=('Arial', 10, 'bold'))
         size_frame.pack(fill=tk.X, padx=10, pady=5)
 
         self.size_var = tk.IntVar(value=self.brush_size)
-        tk.Scale(size_frame, from_=1, to=20, orient=tk.HORIZONTAL,
+        self.size_label = tk.Label(size_frame, text=f"Розмір: {self.brush_size}px",
+                                   bg='#2b2b2b', fg='white')
+        self.size_label.pack(pady=5)
+
+        tk.Scale(size_frame, from_=1, to=50, orient=tk.HORIZONTAL,
                  variable=self.size_var, bg='#2b2b2b', fg='white',
+                 troughcolor='#404040', highlightthickness=0,
                  command=self.update_size).pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Button(self.sidebar, text="❌ Закрити", bg='#ff4444', fg='white',
-                  command=self.close_drawer).pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=10)
+        # Дії
+        actions_frame = tk.LabelFrame(self.sidebar, text="⚙️ Дії",
+                                      bg='#2b2b2b', fg='white', font=('Arial', 10, 'bold'))
+        actions_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        tk.Button(actions_frame, text="↩️ Скасувати (Ctrl+Z)", bg='#ff8800', fg='white',
+                  font=('Arial', 9), command=self.undo).pack(fill=tk.X, pady=3, padx=5)
+
+        tk.Button(actions_frame, text="🗑️ Очистити все (Ctrl+C)", bg='#cc4400', fg='white',
+                  font=('Arial', 9), command=self.clear_canvas).pack(fill=tk.X, pady=3, padx=5)
+
+        tk.Button(actions_frame, text="💾 Зберегти зображення", bg='#0088ff', fg='white',
+                  font=('Arial', 9), command=self.save_canvas).pack(fill=tk.X, pady=3, padx=5)
+
+        # Інфо
+        info_frame = tk.Frame(self.sidebar, bg='#2b2b2b')
+        info_frame.pack(fill=tk.X, padx=10, pady=10)
+
+        info_text = "⌨️ Гарячі клавіші:\nEsc - Закрити\nCtrl+Z - Скасувати\nCtrl+C - Очистити"
+        tk.Label(info_frame, text=info_text, bg='#2b2b2b', fg='#aaaaaa',
+                 font=('Arial', 8), justify=tk.LEFT).pack()
+
+        # Кнопка закриття
+        tk.Button(self.sidebar, text="❌ Закрити малювалку", bg='#ff4444', fg='white',
+                  font=('Arial', 11, 'bold'), command=self.close_drawer).pack(
+            side=tk.BOTTOM, fill=tk.X, padx=10, pady=15)
 
     def set_tool(self, tool):
+        """Зміна інструменту"""
+        # Скидаємо підсвічування всіх кнопок
+        for btn in self.tool_buttons.values():
+            btn.config(bg='#404040', relief=tk.RAISED)
+
+        # Підсвічуємо обраний інструмент
+        self.tool_buttons[tool].config(bg='#00aa00', relief=tk.SUNKEN)
+
         self.current_tool = tool
 
+        # Змінюємо курсор залежно від інструменту
+        if tool == "eraser":
+            self.canvas.config(cursor="circle")
+        else:
+            self.canvas.config(cursor="crosshair")
+
+    def set_color(self, color):
+        """Зміна кольору"""
+        self.current_color = color
+        self.color_preview.config(bg=color)
+
+    def choose_color(self):
+        """Вибір кольору через діалог"""
+        from tkinter import colorchooser
+        color = colorchooser.askcolor(self.current_color)[1]
+        if color:
+            self.set_color(color)
+
     def update_size(self, value):
-        self.brush_size = int(value)
+        """Оновлення розміру пензля"""
+        size = int(float(value))
+        self.brush_size = size
+        self.size_label.config(text=f"Розмір: {size}px")
 
     def start_draw(self, event):
+        """Початок малювання"""
         self.drawing = True
         self.start_x, self.start_y = event.x, event.y
 
+        if self.current_tool in ["line", "rectangle", "circle"]:
+            # Для фігур створюємо тимчасовий об'єкт
+            if self.current_tool == "line":
+                self.temp_shape = self.canvas.create_line(
+                    self.start_x, self.start_y, self.start_x, self.start_y,
+                    fill=self.current_color, width=self.brush_size)
+            elif self.current_tool == "rectangle":
+                self.temp_shape = self.canvas.create_rectangle(
+                    self.start_x, self.start_y, self.start_x, self.start_y,
+                    outline=self.current_color, width=self.brush_size)
+            elif self.current_tool == "circle":
+                self.temp_shape = self.canvas.create_oval(
+                    self.start_x, self.start_y, self.start_x, self.start_y,
+                    outline=self.current_color, width=self.brush_size)
+
     def draw(self, event):
+        """Малювання"""
         if not self.drawing:
             return
 
@@ -481,26 +641,81 @@ class ScreenDrawer(tk.Toplevel):
             self.shapes.append(line_id)
             self.start_x, self.start_y = event.x, event.y
 
+        elif self.current_tool == "eraser":
+            # Ластик малює білим кольором
+            eraser_size = max(self.brush_size, 10)
+            line_id = self.canvas.create_line(
+                self.start_x, self.start_y, event.x, event.y,
+                fill='#0d0d0d', width=eraser_size,
+                capstyle=tk.ROUND, smooth=True)
+            self.shapes.append(line_id)
+            self.start_x, self.start_y = event.x, event.y
+
+        elif self.temp_shape:
+            # Оновлюємо тимчасову фігуру
+            if self.current_tool == "line":
+                self.canvas.coords(self.temp_shape,
+                                   self.start_x, self.start_y, event.x, event.y)
+            elif self.current_tool in ["rectangle", "circle"]:
+                self.canvas.coords(self.temp_shape,
+                                   self.start_x, self.start_y, event.x, event.y)
+
     def end_draw(self, event):
+        """Завершення малювання"""
         self.drawing = False
+        if self.temp_shape:
+            self.shapes.append(self.temp_shape)
+            self.temp_shape = None
 
     def undo(self, event=None):
+        """Скасування останньої дії"""
         if self.shapes:
             self.canvas.delete(self.shapes.pop())
 
+    def clear_canvas(self, event=None):
+        """Очищення всього полотна"""
+        for shape in self.shapes:
+            self.canvas.delete(shape)
+        self.shapes = []
+
+    def save_canvas(self):
+        """Збереження малюнку"""
+        try:
+            from tkinter import filedialog
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[("PNG files", "*.png"), ("All files", "*.*")])
+
+            if filename:
+                # Отримуємо координати canvas
+                x = self.canvas.winfo_rootx()
+                y = self.canvas.winfo_rooty()
+                x1 = x + self.canvas.winfo_width() - 280  # Віднімаємо ширину sidebar
+                y1 = y + self.canvas.winfo_height()
+
+                # Захоплюємо зображення
+                img = ImageGrab.grab(bbox=(x, y, x1, y1))
+                img.save(filename)
+                messagebox.showinfo("Успіх", f"Зображення збережено: {filename}")
+        except Exception as e:
+            messagebox.showerror("Помилка", f"Не вдалося зберегти: {e}")
+
     def close_drawer(self, event=None):
+        """Закриття малювалки"""
         self.destroy()
         self.app_instance.root.deiconify()
 
 
 class EnhancedApp:
+    """Головний клас застосунку"""
+
     def __init__(self, root):
         self.root = root
         self.root.title("🎤 STT + OCR + Translate Pro")
         self.root.geometry("600x550")
 
         self.whisper_model = None
-        self.whisper_model_size = "tiny"  # Використовуємо tiny замість medium для швидкості
+        self.whisper_model_size = "tiny"
         self.recorder = None
         self.is_recording = False
         self.auto_translate = tk.BooleanVar()
@@ -509,6 +724,8 @@ class EnhancedApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def build_ui(self):
+        """Побудова інтерфейсу"""
+        # Меню
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
 
@@ -522,6 +739,7 @@ class EnhancedApp:
         settings_menu.add_separator()
         settings_menu.add_command(label="⚙️ Встановити Tesseract", command=self.run_setup)
 
+        # Панель швидкого доступу
         toolbar = ttk.Frame(self.root)
         toolbar.pack(fill=tk.X, padx=5, pady=2)
 
@@ -530,14 +748,16 @@ class EnhancedApp:
         ttk.Button(toolbar, text="🎤 Аудіо", command=self.quick_speech, width=10).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="🎨 Малювати", command=self.open_drawer, width=10).pack(side=tk.LEFT, padx=2)
 
+        # Статус-бар
         self.status_var = tk.StringVar()
         self.status_var.set("Готовий до роботи")
         status_bar = ttk.Label(self.root, textvariable=self.status_var, relief=tk.SUNKEN)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
+        # Вкладки
         tab_control = ttk.Notebook(self.root)
 
-        # OCR TAB
+        # === OCR TAB ===
         ocr_tab = ttk.Frame(tab_control)
         ocr_controls = ttk.Frame(ocr_tab)
         ocr_controls.pack(fill=tk.X, padx=5, pady=5)
@@ -552,7 +772,7 @@ class EnhancedApp:
 
         self.ocr_text.pack(expand=True, fill='both', padx=5, pady=5)
 
-        # STT TAB
+        # === STT TAB ===
         stt_tab = ttk.Frame(tab_control)
         stt_controls = ttk.Frame(stt_tab)
         stt_controls.pack(fill=tk.X, padx=5, pady=5)
@@ -583,7 +803,7 @@ class EnhancedApp:
         self.model_combo.pack(side=tk.LEFT, padx=5)
         self.model_combo.bind("<<ComboboxSelected>>", self.on_model_change)
 
-        # TRANSLATE TAB
+        # === TRANSLATE TAB ===
         trans_tab = ttk.Frame(tab_control)
         trans_controls = ttk.Frame(trans_tab)
         trans_controls.pack(fill=tk.X, padx=5, pady=5)
@@ -612,6 +832,7 @@ class EnhancedApp:
         self.output_text = scrolledtext.ScrolledText(trans_tab, wrap=tk.WORD, height=8, font=('Arial', 11))
         self.output_text.pack(expand=True, fill='both', padx=5, pady=5)
 
+        # Додавання вкладок
         tab_control.add(ocr_tab, text="🖼️ OCR")
         tab_control.add(stt_tab, text="🎤 Аудіо (Whisper)")
         tab_control.add(trans_tab, text="🌍 Переклад")
@@ -642,6 +863,7 @@ class EnhancedApp:
         threading.Thread(target=setup_thread, daemon=True).start()
 
     def open_drawer(self):
+        """Відкриття малювалки"""
         try:
             self.root.withdraw()
             self.update_status("Малювалка відкрита")
@@ -651,15 +873,19 @@ class EnhancedApp:
             self.root.deiconify()
 
     def quick_ocr(self):
+        """Швидкий доступ до OCR"""
         self.run_ocr()
 
     def quick_speech(self):
+        """Швидкий доступ до розпізнавання мови"""
         self.handle_speech()
 
     def clear_text(self, text_widget):
+        """Очищення текстового поля"""
         text_widget.delete(1.0, tk.END)
 
     def copy_text(self, text_widget):
+        """Копіювання тексту в буфер обміну"""
         content = text_widget.get(1.0, tk.END).strip()
         if content:
             self.root.clipboard_clear()
@@ -667,11 +893,13 @@ class EnhancedApp:
             self.update_status("Текст скопійовано!")
 
     def clear_history(self):
+        """Очищення всієї історії"""
         for widget in [self.ocr_text, self.speech_text, self.input_text, self.output_text]:
             widget.delete(1.0, tk.END)
         self.update_status("Історія очищена")
 
     def run_ocr(self):
+        """Запуск OCR розпізнавання"""
         if not TESSERACT_AVAILABLE:
             response = messagebox.askyesno(
                 "Tesseract не встановлено",
@@ -688,6 +916,7 @@ class EnhancedApp:
         ScreenSelector(self.set_ocr_text)
 
     def set_ocr_text(self, text):
+        """Встановлення розпізнаного тексту"""
         self.root.deiconify()
         self.ocr_text.delete(1.0, tk.END)
         self.ocr_text.insert(tk.END, text.strip())
@@ -700,6 +929,7 @@ class EnhancedApp:
         self.update_status(f"Розпізнано {len(text)} символів")
 
     def handle_speech(self):
+        """Обробка запису та розпізнавання мови"""
         if not WHISPER_AVAILABLE:
             response = messagebox.askyesno(
                 "Whisper не встановлено",
@@ -715,33 +945,40 @@ class EnhancedApp:
                 threading.Thread(target=install, daemon=True).start()
             return
 
-        if getattr(self, "is_recording", False):
+        if self.is_recording:
             # Зупинка запису
             self.is_recording = False
             self.speech_button.config(text="🎧 Почати запис")
-            self.update_mic_status("Зупинено. Транскрибую...")
+            self.speech_button.config(state='disabled')
+            self.update_mic_status("⏳ Зупинено. Транскрибую...")
 
-            try:
-                audio = self.recorder.stop()
-            except Exception as e:
-                self.update_mic_status(f"❌ Помилка запису: {e}")
-                return
-
-            def transcribe_job(audio_array):
+            def stop_and_transcribe():
                 try:
+                    # Зупиняємо запис
+                    audio = self.recorder.stop()
+
+                    if len(audio) < 1600:  # Менше 0.1 секунди
+                        self.root.after(0, lambda: self.update_mic_status("⚠️ Занадто короткий запис"))
+                        self.root.after(0, lambda: self.speech_button.config(state='normal'))
+                        return
+
+                    # Нормалізація аудіо
+                    audio = audio / np.max(np.abs(audio) + 1e-8)
+
+                    print(f"📊 Аудіо: {len(audio)} сампли, {len(audio) / 16000:.2f} сек")
+
                     # Завантаження моделі
                     self.load_whisper_model()
 
-                    if audio_array.shape[0] == 0:
-                        self.root.after(0, lambda: self.update_mic_status("⚠️ Порожній запис"))
-                        return
-
                     # Транскрипція
+                    print("🎯 Починаю транскрипцію...")
                     segments, info = self.whisper_model.transcribe(
-                        audio_array,
-                        beam_size=3,  # Менше для швидкості
+                        audio,
+                        beam_size=5,
                         language="uk",
                         task="transcribe",
+                        vad_filter=True,
+                        vad_parameters=dict(min_silence_duration_ms=500),
                     )
 
                     # Збираємо текст
@@ -750,36 +987,55 @@ class EnhancedApp:
                         txt = seg.text.strip()
                         if txt:
                             parts.append(txt)
+                            print(f"  📝 [{seg.start:.2f}s - {seg.end:.2f}s]: {txt}")
 
                     full_text = " ".join(parts).strip()
 
                     if not full_text:
-                        full_text = "[Мову не розпізнано. Спробуйте говорити голосніше]"
+                        full_text = "[Мову не розпізнано. Спробуйте:\n- Говорити голосніше\n- Тримати мікрофон ближче\n- Записувати довше (мін 1-2 сек)]"
+
+                    print(f"✅ Результат: {full_text[:100]}...")
 
                     # Оновлення GUI
                     def gui_update():
                         self.speech_text.insert(tk.END, full_text + "\n\n")
                         self.speech_text.see(tk.END)
                         self.update_mic_status("✅ Готово")
+                        self.speech_button.config(state='normal')
+
+                        # Автоматичний переклад
+                        if self.auto_translate.get() and "[" not in full_text:
+                            self.input_text.delete(1.0, tk.END)
+                            self.input_text.insert(tk.END, full_text)
+                            self.run_translate()
 
                     self.root.after(0, gui_update)
 
                 except Exception as error_s:
+                    import traceback
                     error_msg = str(error_s)
-                    self.root.after(0, lambda: self.update_mic_status(f"❌ Помилка: {error_msg[:50]}"))
+                    print(f"❌ Помилка транскрипції:\n{traceback.format_exc()}")
 
-            threading.Thread(target=transcribe_job, args=(audio,), daemon=True).start()
+                    def show_error():
+                        self.update_mic_status(f"❌ Помилка: {error_msg[:50]}")
+                        self.speech_button.config(state='normal')
+
+                    self.root.after(0, show_error)
+
+            threading.Thread(target=stop_and_transcribe, daemon=True).start()
             return
 
         # Початок запису
         try:
+            print("\n🎤 Початок запису...")
             self.recorder = FullRecorder(samplerate=16000, channels=1)
             self.recorder.start()
             self.is_recording = True
             self.speech_button.config(text="⏹️ Зупинити і розпізнати")
-            self.update_mic_status("🎤 Запис...")
+            self.update_mic_status("🔴 Запис... (говоріть зараз)")
         except Exception as e:
-            self.update_mic_status(f"❌ Помилка: {e}")
+            print(f"❌ Помилка початку запису: {e}")
+            self.update_mic_status(f"❌ Помилка мікрофону: {e}")
             self.is_recording = False
 
     def load_whisper_model(self):
@@ -810,13 +1066,15 @@ class EnhancedApp:
                 raise
 
     def update_status(self, message):
+        """Оновлення статус-бару"""
         self.status_var.set(message)
         self.root.update_idletasks()
 
     def update_mic_status(self, message):
+        """Оновлення статусу мікрофону"""
         if "Запис" in message:
             self.mic_status.config(text="🔴", foreground="red")
-        elif "Транскриб" in message:
+        elif "Транскриб" in message or "Зупинено" in message:
             self.mic_status.config(text="🟡", foreground="orange")
         elif "Готово" in message or "✅" in message:
             self.mic_status.config(text="✅", foreground="green")
@@ -830,6 +1088,7 @@ class EnhancedApp:
         self.update_status(message)
 
     def get_translation_languages(self, selection):
+        """Отримання мов для перекладу"""
         lang_map = {
             0: ("uk", "en"),
             1: ("en", "uk"),
@@ -839,6 +1098,7 @@ class EnhancedApp:
         return lang_map.get(selection, ("uk", "en"))
 
     def run_translate(self):
+        """Виконання перекладу"""
         text = self.input_text.get(1.0, tk.END).strip()
         if not text:
             messagebox.showinfo("Помилка", "Немає тексту для перекладу")
@@ -846,30 +1106,41 @@ class EnhancedApp:
 
         self.update_status("Перекладаю...")
 
-        try:
-            from_lang, to_lang = self.get_translation_languages(self.lang_combo.current())
+        def translate_thread():
+            try:
+                from_lang, to_lang = self.get_translation_languages(self.lang_combo.current())
 
-            translator = GoogleTranslator(source=from_lang, target=to_lang)
-            translated = translator.translate(text)
+                translator = GoogleTranslator(source=from_lang, target=to_lang)
+                translated = translator.translate(text)
 
-            self.output_text.delete(1.0, tk.END)
-            self.output_text.insert(tk.END, translated)
+                def gui_update():
+                    self.output_text.delete(1.0, tk.END)
+                    self.output_text.insert(tk.END, translated)
+                    self.update_status(f"Переклад завершено ({from_lang} → {to_lang})")
 
-            self.update_status(f"Переклад завершено ({from_lang} → {to_lang})")
+                self.root.after(0, gui_update)
 
-        except Exception as e:
-            messagebox.showerror("Помилка перекладу", f"Не вдалося перекласти:\n{str(e)}")
-            self.update_status("Помилка перекладу")
+            except Exception as e:
+                error_msg = str(e)
+                self.root.after(0, lambda: messagebox.showerror("Помилка перекладу",
+                                                                f"Не вдалося перекласти:\n{error_msg}"))
+                self.root.after(0, lambda: self.update_status("Помилка перекладу"))
+
+        threading.Thread(target=translate_thread, daemon=True).start()
 
     def on_close(self):
         """Обробник закриття вікна"""
         if self.is_recording and self.recorder:
-            self.recorder.stop()
+            try:
+                self.recorder.stop()
+            except:
+                pass
         self.root.destroy()
 
 
 # Головна функція запуску
 def main():
+    """Головна функція програми"""
     print("=" * 60)
     print("🚀 STT + OCR + Translate Pro - Portable Edition")
     print("=" * 60)
