@@ -1038,7 +1038,7 @@ class EnhancedApp:
             self.update_mic_status(f"❌ Помилка мікрофону: {e}")
             self.is_recording = False
 
-    def load_whisper_model(self):
+    def load_whisper_model(self, faster_whisper=None):
         """Завантаження моделі Whisper"""
         if self.whisper_model is None:
             self.root.after(0, lambda: self.update_status(f"⏳ Завантаження Whisper ({self.whisper_model_size})..."))
